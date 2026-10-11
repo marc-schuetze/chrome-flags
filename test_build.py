@@ -83,7 +83,7 @@ class Parse(unittest.TestCase):
 
     def test_about_flags(self):
         about = '''const FeatureEntry::Choice kPairs[] = {{"a", "b"}};
-const FeatureEntry::Choice kDirChoices[] = {
+const FeatureEntry::Choice KDirChoices[] = {
     {flags_ui::kGenericExperimentChoiceDefault, "", ""},
     {flag_descriptions::kRtl, switches::kForceUIDirection,
      switches::kForceDirectionRTL}};
@@ -94,7 +94,7 @@ const FeatureEntry::Choice kDemuxChoices[] = {
     {"On", switches::kEnableFeatures, kDemuxList}};
 const FeatureEntry kFeatureEntries[] = {
     {"force-ui-direction", flag_descriptions::kN, flag_descriptions::kD, kOsAll,
-     MULTI_VALUE_TYPE(kDirChoices)},
+     MULTI_VALUE_TYPE(KDirChoices)},
     {"demux", flag_descriptions::kN, flag_descriptions::kD, kOsDesktop,
      MULTI_VALUE_TYPE(kDemuxChoices)},
     {"actor", flag_descriptions::kN, flag_descriptions::kD, kOsMac,

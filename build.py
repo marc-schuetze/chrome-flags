@@ -77,9 +77,13 @@ def checkout(version):
             "--branch", version, REPO, str(src))
     else:
         run("git", "fetch", "-q", "--depth", "1", "--filter=blob:none", "origin", "tag", version, cwd=src)
-    subprocess.run(["git", "sparse-checkout", "set", "--no-cone", "--stdin"], cwd=src, check=True,
-                   input="\n".join(SPARSE) + "\n", text=True)
-    run("git", "checkout", "-q", "--force", version, cwd=src)
+    patterns = SPARSE
+    for _ in range(2):  # second pass: headers about_flags.cc includes (+ their .cc), where switches
+        subprocess.run(["git", "sparse-checkout", "set", "--no-cone", "--stdin"], cwd=src, check=True,
+                       input="\n".join(patterns) + "\n", text=True)  # outside *switch* files live
+        run("git", "checkout", "-q", "--force", version, cwd=src)
+        includes = re.findall(r'^#include "([\w/.-]+)\.h"', (src / ABOUT).read_text(), re.M)
+        patterns = SPARSE + [f"/{i}.{ext}" for i in includes for ext in ("h", "cc")]
     return src
 
 
@@ -212,7 +216,19 @@ def parse(src):
                 if not is_value(const, name, defs):
                     add(name, "switch", doc(comment), rel)
                     consts.setdefault(const, name)
-    about = src / ABOUT  # features chrome://flags references but no *feature* file defines: name = const minus k,
+    about = src / ABOUT
+    # switches chrome://flags sets but no *switch* file defines (optimization_guide_logger.h, ...):
+    # only constants in a switch slot of an entry or choice, so values like "staging" stay out
+    slots = set(re.findall(r"(?:SINGLE_VALUE_TYPE|SINGLE_DISABLE_VALUE_TYPE|SINGLE_VALUE_TYPE_AND_VALUE|"
+                           r"ORIGIN_LIST_VALUE_TYPE|STRING_VALUE_TYPE)\(\s*(?:\w+::)*(k\w+)|"
+                           r"\{\s*[^{},]+,\s*(?:\w+::)*(k\w+)\s*,", about.read_text() if about.exists() else ""))
+    slots = {c for pair in slots for c in pair if c and c not in consts}
+    for rel, _, text in files:
+        for comment, const, name in SWITCH.findall(text) if rel not in DESCRIPTIONS else []:
+            if const in slots and SWITCH_NAME.fullmatch(name):
+                add(name, "switch", doc(comment), rel)
+                consts.setdefault(const, name)
+    # features chrome://flags references but no *feature* file defines: name = const minus k,
     if about.exists():   # kept only if the binary has that string (update; resource cannot add names)
         for const in set(re.findall(r"FEATURE_(?:WITH_PARAMS_)?VALUE_TYPE\(\s*(?:\w*::)*(k[A-Z]\w*)", about.read_text())):
             if const not in consts and const[1:] not in flags:
@@ -248,7 +264,7 @@ def about_flags(src, consts, names=()):
     text = re.sub(r"//[^\n]*", "", path.read_text()) if path.exists() else ""
     lists = strings(text)  # feature lists like kSymphoniaDemuxingFeatureList
     # body ends at the first "};" that is not past the next array definition
-    arrays = dict(re.findall(r"(k\w+)\[\]\s*=\s*\{((?:(?!\[\]\s*=).)*?)\};", text, re.S))
+    arrays = dict(re.findall(r"([kK]\w+)\[\]\s*=\s*\{((?:(?!\[\]\s*=).)*?)\};", text, re.S))
     out = {}
     entry = re.compile(r'\{\s*"([\w-]+)",\s*flag_descriptions::(k\w+),\s*flag_descriptions::(k\w+),'
                        r'\s*([\w\s|]+?),\s*(\w+)\((.*?)\)\s*\}', re.S)
@@ -256,7 +272,7 @@ def about_flags(src, consts, names=()):
         oses = sorted({o for tok in re.findall(r"kOs\w+", mask) for o in ABOUT_OS.get(tok, [])})
         if not oses:
             continue
-        refs = re.findall(r"\b(k[A-Z]\w*)", args)
+        refs = re.findall(r"\b([kK][A-Z]\w*)", args)  # KWebXrHandAnonymizationChoices
         body = args
         if macro == "MULTI_VALUE_TYPE":
             body = " ".join(arrays.get(a, "") for a in refs)
