@@ -54,7 +54,9 @@ ABOUT_OS = {"kOsAll": PLATFORMS, "kOsDesktop": PLATFORMS, "kOsLinux": ["linux"],
 COMMENT = r"((?:^[ \t]*//[^\n]*\n)*)"  # [^\n], not ".": FEATURE runs with re.S
 SWITCH = re.compile(COMMENT + r'^[^\n/]*?(?<![\w:])(k\w+)\[\]\s*=\s*"([^"]+)"', re.M)
 SWITCH_MACRO = re.compile(COMMENT + r'^[ \t]*(?!BASE_FEATURE)\w+\(\s*(k\w+)\s*,\s*"([^"]+)"\s*\)', re.M)
-FEATURE = re.compile(COMMENT + r'^[ \t]*BASE_FEATURE\(\s*(\w+)\s*,', re.M)  # M141: BASE_FEATURE(Name, ...) without k
+FEATURE = re.compile(COMMENT + r'^[ \t]*BASE_FEATURE\(\s*(?:\w+::)*(\w+)\s*,', re.M)  # M141: BASE_FEATURE(Name, ...) without k;
+# omnibox: BASE_FEATURE(Class::kX, ...)
+LITERALS = r'(?:"(?:[^"\\]|\\.)*"\s*)+'
 BLINK_ENTRY = re.compile(r'\{\s*((?:[ \t]*//[^\n]*\n)*)\s*name:\s*"(\w+)"(.*?)\n\s*\},?\n', re.S)
 SWITCH_FILE = re.compile(r"(^|_)switch(es|_list)?\.(cc|h)$")  # not *switcher*
 BROWSER = re.compile(r"(^|/)(chrome|chrome\.dll|[^/]+ Framework)$")
@@ -235,15 +237,18 @@ def about_flags(src, consts, names=()):
     """Target flag name -> chrome://flags entry {id, name, desc, os} from about_flags.cc.
     An entry targets every switch/feature constant in its value macro, for MULTI_VALUE_TYPE
     the ones in its choices array."""
+    def strings(text):  # kX[] = "a" "b"; -> {kX: "ab"}
+        return {c: "".join(re.findall(r'"((?:[^"\\]|\\.)*)"', lits)).replace('\\"', '"')
+                for c, lits in re.findall(r'\b(k\w+)\[\]\s*=\s*(' + LITERALS + ');', text)}
     texts = {}
     for d in DESCRIPTIONS:
-        path = src / d
-        if path.exists():
-            for const, literals in re.findall(r'\b(k\w+)\[\]\s*=\s*((?:"(?:[^"\\]|\\.)*"\s*)+);', path.read_text()):
-                texts[const] = "".join(re.findall(r'"((?:[^"\\]|\\.)*)"', literals)).replace('\\"', '"')
+        if (src / d).exists():
+            texts.update(strings((src / d).read_text()))
     path = src / ABOUT
     text = re.sub(r"//[^\n]*", "", path.read_text()) if path.exists() else ""
-    arrays = dict(re.findall(r"(k\w+)\[\]\s*=\s*\{(.*?)\n\};", text, re.S))
+    lists = strings(text)  # feature lists like kSymphoniaDemuxingFeatureList
+    # body ends at the first "};" that is not past the next array definition
+    arrays = dict(re.findall(r"(k\w+)\[\]\s*=\s*\{((?:(?!\[\]\s*=).)*?)\};", text, re.S))
     out = {}
     entry = re.compile(r'\{\s*"([\w-]+)",\s*flag_descriptions::(k\w+),\s*flag_descriptions::(k\w+),'
                        r'\s*([\w\s|]+?),\s*(\w+)\((.*?)\)\s*\}', re.S)
@@ -252,12 +257,17 @@ def about_flags(src, consts, names=()):
         if not oses:
             continue
         refs = re.findall(r"\b(k[A-Z]\w*)", args)
+        body = args
         if macro == "MULTI_VALUE_TYPE":
             body = " ".join(arrays.get(a, "") for a in refs)
-            # choices like {desc, switches::kEnableFeatures, "Feature:param/value"} target the feature
-            named = [n for v in re.findall(r'switches::k(?:Enable|Disable)Features,\s*"([^"]*)"', body)
-                     for n in re.split(r"[,<]", v) if n]
-            refs = re.findall(r"::(k[A-Z]\w*)", body) + ["k" + n.split(":")[0] for n in named]
+            refs = re.findall(r"::(k[A-Z]\w*)", body)
+        # {desc, switches::kEnableFeatures, "Feature:param/value,Other"} and
+        # ENABLE_DISABLE_VALUE_TYPE_AND_VALUE(switches::kEnableFeatures, kSomeFeatureList, ...) target the features
+        named = []
+        for value in re.findall(r"k(?:Enable|Disable)Features,\s*(" + LITERALS + r"|k\w+)", body):
+            value = lists.get(value, "") if value.startswith("k") else "".join(re.findall(r'"([^"]*)"', value))
+            named += [n.split(":")[0] for n in re.split(r"[,<]", value) if n]
+        refs = [r for r in refs if r not in ("kEnableFeatures", "kDisableFeatures")] + ["k" + n for n in named]
         for ref in refs:
             target = consts.get(ref) or (ref[1:] if ref[1:] in names else None)  # generated blink:: features
             if target and target not in out:

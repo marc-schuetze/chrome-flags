@@ -1,7 +1,10 @@
 """Offline checks for build.py: parsers, preprocessor, merge."""
 import unittest
 
-from build import (BLINK_ENTRY, SWITCH, SWITCH_MACRO, doc, feature_default, features, is_value, merge,
+import tempfile
+from pathlib import Path
+
+from build import (ABOUT, BLINK_ENTRY, about_flags, SWITCH, SWITCH_MACRO, doc, feature_default, features, is_value, merge,
                    preprocess)
 
 SWITCHES = '''// Select which ANGLE backend to use.
@@ -73,6 +76,41 @@ class Parse(unittest.TestCase):
     def test_blink(self):
         found = [(doc(c), n) for c, n, _ in BLINK_ENTRY.findall(BLINK)]
         self.assertEqual(found, [("WebGPU developer features.", "WebGPUDeveloperFeatures"), ("", "Plain")])
+
+    def test_class_qualified_feature(self):
+        (_, const, args), = features('BASE_FEATURE(Zps::kZpsLimit, "OmniboxZpsLimit", base::FEATURE_DISABLED_BY_DEFAULT);')
+        self.assertEqual(const, "kZpsLimit")
+
+    def test_about_flags(self):
+        about = '''const FeatureEntry::Choice kPairs[] = {{"a", "b"}};
+const FeatureEntry::Choice kDirChoices[] = {
+    {flags_ui::kGenericExperimentChoiceDefault, "", ""},
+    {flag_descriptions::kRtl, switches::kForceUIDirection,
+     switches::kForceDirectionRTL}};
+constexpr char kDemuxList[] =
+    "DemuxA,"
+    "DemuxB";
+const FeatureEntry::Choice kDemuxChoices[] = {
+    {"On", switches::kEnableFeatures, kDemuxList}};
+const FeatureEntry kFeatureEntries[] = {
+    {"force-ui-direction", flag_descriptions::kN, flag_descriptions::kD, kOsAll,
+     MULTI_VALUE_TYPE(kDirChoices)},
+    {"demux", flag_descriptions::kN, flag_descriptions::kD, kOsDesktop,
+     MULTI_VALUE_TYPE(kDemuxChoices)},
+    {"actor", flag_descriptions::kN, flag_descriptions::kD, kOsMac,
+     ENABLE_DISABLE_VALUE_TYPE_AND_VALUE(switches::kEnableFeatures, "Actor,"
+                                         "ActorUi:p/1", switches::kDisableFeatures, "Actor")},
+};
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ABOUT).parent.mkdir(parents=True)
+            (Path(tmp) / ABOUT).write_text(about)
+            out = about_flags(Path(tmp), {"kForceUIDirection": "force-ui-direction"},
+                              {"DemuxA", "DemuxB", "Actor", "ActorUi"})
+        self.assertEqual({k: v["id"] for k, v in out.items()},
+                         {"force-ui-direction": "force-ui-direction", "DemuxA": "demux", "DemuxB": "demux",
+                          "Actor": "actor", "ActorUi": "actor"})
+        self.assertEqual(out["Actor"]["os"], ["mac"])
 
 
 class Merge(unittest.TestCase):
