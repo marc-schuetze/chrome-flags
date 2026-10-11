@@ -1,0 +1,57 @@
+# Daily: process new or changed Chrome milestones from Chrome for Testing, commit data/,
+# rebuild site/flags.json and deploy site/ to GitHub Pages.
+# Backfill: run manually with limit 0 (all missing milestones, ~2.5 min each).
+name: update
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "max milestones this run (0 = all)"
+        default: "10"
+      rebuild:
+        description: "reprocess milestones already in data/ (with limit 0: all, ~2.5 min each)"
+        type: boolean
+        default: false
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+concurrency:
+  group: update
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/chrome-flags-site/src
+          key: chromium-src-${{ github.run_id }}
+          restore-keys: chromium-src-
+      - run: python3 build.py update --limit "${{ inputs.limit || '10' }}" ${{ inputs.rebuild && '--force' || '' }}
+      - name: commit data
+        run: |
+          git add data
+          if ! git diff --cached --quiet; then
+            git -c user.name=github-actions -c user.email=41898282+github-actions[bot]@users.noreply.github.com \
+              commit -q -m "data: $(git diff --cached --name-only | sed 's|data/||; s|.json.gz||' | tr '\n' ' ')"
+            git push -q
+          fi
+      - run: python3 build.py site
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

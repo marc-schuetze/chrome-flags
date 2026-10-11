@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chromium flags by version and OS</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { color-scheme: light dark; --fg: #1d1d1f; --bg: #fff; --muted: #6b6b70; --line: #e3e3e6; --warn: #b3261e; --ok: #1b7f3b; --chip: #f2f2f4; }
+  @media (prefers-color-scheme: dark) { :root { --fg: #e8e8ea; --bg: #141416; --muted: #9a9aa0; --line: #2c2c30; --warn: #ff7a70; --ok: #6fd18f; --chip: #222226; } }
+  body { margin: 0; font: 15px/1.45 system-ui, sans-serif; color: var(--fg); background: var(--bg); }
+  header, main { max-width: 1200px; margin: 0 auto; padding: 0 16px; }
+  h1 { font-size: 1.4rem; margin: 20px 0 4px; }
+  header p { margin: 0 0 12px; color: var(--muted); }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); }
+  .controls input[type=search] { flex: 1 1 280px; padding: 6px 8px; font: inherit; }
+  select, textarea, button { font: inherit; }
+  label { white-space: nowrap; }
+  .count { color: var(--muted); }
+  .flag { padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .flag code.name { font-weight: 600; word-break: break-all; }
+  .meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 4px 0; font-size: 0.85rem; color: var(--muted); }
+  .meta .os { background: var(--chip); padding: 0 6px; border-radius: 4px; }
+  .infobar { color: var(--warn); font-weight: 600; }
+  .doc { margin: 2px 0 0; }
+  .about { margin: 6px 0 0; padding-left: 10px; border-left: 3px solid var(--line); }
+  .about b { font-weight: 600; }
+  .nodoc { color: var(--muted); font-style: italic; }
+  a { color: inherit; }
+  details.check { margin: 10px 0; }
+  details.check textarea { width: 100%; min-height: 70px; }
+  .result div { font-family: ui-monospace, monospace; font-size: 0.85rem; }
+  .bad { color: var(--warn); } .good { color: var(--ok); }
+  #more { margin: 16px 0 32px; }
+  nav { display: flex; gap: 16px; margin: 0 0 4px; }
+  nav a { text-decoration: none; padding: 4px 0; border-bottom: 2px solid transparent; }
+  nav a.on { border-bottom-color: currentColor; font-weight: 600; }
+  .ms { padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .ms h2 { font-size: 1.05rem; margin: 0 0 4px; }
+  .ms details { margin: 2px 0 2px 12px; }
+  .ms ul { margin: 4px 0; padding-left: 20px; columns: 2 320px; font-size: 0.85rem; }
+  .ms li { break-inside: avoid; }
+  .add { color: var(--ok); } .del { color: var(--warn); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Chromium command-line flags</h1>
+  <p>Every switch, feature and Blink runtime feature per Chrome milestone and desktop OS, read from the Chromium source and the official Chrome for Testing binaries. <span id="range"></span></p>
+</header>
+<main>
+  <nav><a href="#" id="tab-list" class="on">All flags</a><a href="#" id="tab-timeline">Timeline</a></nav>
+  <div class="controls">
+    <input type="search" id="q" placeholder="Search name or description" autofocus>
+    <label id="vlabel">Version <select id="v"><option value="">all</option></select></label>
+    <label><input type="checkbox" class="os" value="linux" checked> Linux</label>
+    <label><input type="checkbox" class="os" value="mac" checked> macOS</label>
+    <label><input type="checkbox" class="os" value="win" checked> Windows</label>
+    <label>Kind <select id="kind"><option value="">all</option><option>switch</option><option>feature</option><option>blink</option></select></label>
+    <label>chrome://flags <select id="about"><option value="">any</option><option value="yes">listed</option><option value="no">not listed</option></select></label>
+    <label id="wlabel">Warning <select id="warn"><option value="">any</option><option value="yes">shows infobar</option><option value="no">no infobar</option></select></label>
+    <span class="count" id="count"></span>
+  </div>
+  <details class="check" id="checkbox">
+    <summary>Check my flags</summary>
+    <p>Paste a command line. Each flag is checked against the version and OS filters above.</p>
+    <textarea id="paste" placeholder="--enable-features=Vulkan --use-angle=vulkan --enable-unsafe-webgpu"></textarea>
+    <div class="result" id="result"></div>
+  </details>
+  <div id="list"></div>
+  <button id="more" hidden>Show more</button>
+  <div id="timeline" hidden></div>
+</main>
+<script>
+const OS = { linux: "Linux", mac: "macOS", win: "Windows" };
+const PAGE = 200;
+let data, rows = [], shown = 0, view = "list", milestones = [];
+const $ = id => document.getElementById(id);
+const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+function usage(name, kind) {
+  if (kind.includes("switch")) return `--${name}`;
+  if (kind.includes("feature")) return `--enable-features=${name}`;
+  return `--enable-blink-features=${name}`;
+}
+const span = r => r[0] === r[1] ? `${r[0]}` : `${r[0]}&ndash;${r[1]}`;
+const inRange = (ranges, v) => (ranges || []).some(r => r[0] <= v && v <= r[1]);
+const valueAt = (ranges, v) => ((ranges || []).find(r => r[0] <= v && v <= r[1]) || [])[2];
+
+function state() {
+  return { q: $("q").value.trim().toLowerCase(), v: +$("v").value || 0, kind: $("kind").value, warn: $("warn").value, about: $("about").value,
+           os: [...document.querySelectorAll(".os:checked")].map(e => e.value) };
+}
+
+function matches([name, f], s) {
+  if (s.kind && !f.kind.includes(s.kind)) return false;
+  const oses = s.os.filter(o => f.os[o] && (!s.v || inRange(f.os[o], s.v)));
+  if (!oses.length) return false;
+  if (s.warn) {
+    const bad = oses.some(o => f.infobar && (s.v ? inRange(f.infobar[o], s.v) : f.infobar[o]));
+    if ((s.warn === "yes") !== bad) return false;
+  }
+  if (s.about && (s.about === "yes") !== listed(f, s.v, oses)) return false;
+  return textMatch(name, f, s.q);
+}
+
+function listed(f, v, oses) {
+  return !!f.about && oses.some(o => v ? inRange(f.about.os[o], v) : f.about.os[o]);
+}
+
+function textMatch(name, f, q) {
+  if (!q) return true;
+  const a = f.about || {};
+  return [name, f.doc, a.id || "", a.name || "", a.desc || ""].some(t => t.toLowerCase().includes(q));
+}
+
+function render(name, f, s) {
+  const meta = Object.keys(OS).filter(o => f.os[o]).map(o => {
+    let t = `${OS[o]} ${f.os[o].map(span).join(", ")}`;
+    if (f.default && f.default[o]) {
+      const d = s.v ? valueAt(f.default[o], s.v) : null;
+      t += d ? ` &middot; default ${d}` : ` &middot; default ${f.default[o].map(r => `${r[2]} ${span(r)}`).join(", ")}`;
+    }
+    if (f.infobar && f.infobar[o] && (!s.v || inRange(f.infobar[o], s.v)))
+      t += ` &middot; <span class="infobar">infobar ${f.infobar[o].map(span).join(", ")}</span>`;
+    return `<span class="os">${t}</span>`;
+  });
+  if (f.status) meta.push(`<span>Blink status: ${esc(f.status)}</span>`);
+  const a = f.about;
+  const about = a ? `<div class="about"><code>chrome://flags/#${esc(a.id)}</code> &middot; <b>${esc(a.name)}</b> &middot;
+      <span class="count">${Object.keys(OS).filter(o => a.os[o]).map(o => `${OS[o]} ${a.os[o].map(span).join(", ")}`).join(" &middot; ")}</span>
+      ${a.desc ? `<div>${esc(a.desc)}</div>` : ""}</div>` : "";
+  const latest = Math.max(...Object.values(f.os).flat().map(r => r[1]));
+  const src = `https://source.chromium.org/chromium/chromium/src/+/refs/tags/${data.versions[latest]}:${f.file}`;
+  meta.push(`<a href="${src}" rel="noopener">${esc(f.file)}</a>`);
+  return `<div class="flag"><code class="name">${esc(usage(name, f.kind))}</code>
+    <div class="meta">${meta.join("")}</div>
+    <p class="doc">${f.doc ? esc(f.doc) : '<span class="nodoc">No comment in source.</span>'}</p>${about}</div>`;
+}
+
+function present(f, m, oses) { return oses.some(o => inRange(f.os[o], m)); }
+
+function timeline() {
+  const s = state();
+  const pick = Object.entries(data.flags).filter(([n, f]) =>
+    (!s.kind || f.kind.includes(s.kind)) && s.os.some(o => f.os[o]) &&
+    textMatch(n, f, s.q));
+  const asc = [...milestones].reverse();
+  const link = n => `<a href="#q=${encodeURIComponent(n)}" data-q="${esc(n)}"><code>${esc(n)}</code></a>`;
+  const out = [];
+  for (let i = asc.length - 1; i > 0; i--) {
+    const m = asc[i], prev = asc[i - 1];
+    const added = [], removed = [], flipped = [], listedNow = [], unlisted = [];
+    for (const [n, f] of pick) {
+      const now = present(f, m, s.os), before = present(f, prev, s.os);
+      if (now && !before) added.push(link(n));
+      else if (!now && before) removed.push(link(n));
+      if (f.about) {
+        const a = listed(f, m, s.os), b = listed(f, prev, s.os);
+        if (a && !b) listedNow.push(`${link(n)} <code>#${esc(f.about.id)}</code>`);
+        else if (!a && b) unlisted.push(`${link(n)} <code>#${esc(f.about.id)}</code>`);
+      }
+      if (now && !before || !now && before) continue;
+      if (now && f.default) {
+        const changes = s.os.map(o => [o, valueAt(f.default[o], prev), valueAt(f.default[o], m)])
+          .filter(([, a, b]) => a && b && a !== b);
+        if (changes.length) flipped.push(`${link(n)} ${changes.map(([o, a, b]) => `${OS[o]} ${esc(a)} &rarr; ${esc(b)}`).join(", ")}`);
+      }
+    }
+    const part = (label, cls, items) => items.length
+      ? `<details><summary class="${cls}">${label} ${items.length}</summary><ul>${items.map(x => `<li>${x}</li>`).join("")}</ul></details>` : "";
+    out.push(`<div class="ms"><h2>M${m} <span class="count">${data.versions[m]} &middot; since M${prev}</span></h2>
+      ${part("New", "add", added)}${part("Removed", "del", removed)}${part("Default changed", "", flipped)}
+      ${part("Added to chrome://flags", "add", listedNow)}${part("Removed from chrome://flags", "del", unlisted)}
+      ${added.length + removed.length + flipped.length + listedNow.length + unlisted.length ? "" : '<span class="count">No changes for these filters.</span>'}</div>`);
+  }
+  $("timeline").innerHTML = out.join("");
+  $("count").textContent = `${pick.length} flags`;
+}
+
+function setView(v) {
+  view = v;
+  $("tab-list").classList.toggle("on", v === "list");
+  $("tab-timeline").classList.toggle("on", v === "timeline");
+  for (const id of ["list", "checkbox", "vlabel", "wlabel"]) $(id).hidden = v !== "list";
+  $("timeline").hidden = v !== "timeline";
+  if (v !== "list") $("more").hidden = true;
+  update();
+}
+
+function update() {
+  const s = state();
+  if (view === "timeline") { timeline(); writeHash(s); return; }
+  rows = Object.entries(data.flags).filter(e => matches(e, s));
+  $("count").textContent = `${rows.length} flags`;
+  $("list").innerHTML = "";
+  shown = 0;
+  more();
+  check();
+  writeHash(s);
+}
+
+function writeHash(s) {
+  const p = new URLSearchParams();
+  if (view !== "list") p.set("view", view);
+  for (const [k, val] of Object.entries({ q: $("q").value, v: $("v").value, kind: s.kind, warn: s.warn, about: s.about }))
+    if (val) p.set(k, val);
+  if (s.os.length < 3) p.set("os", s.os.join(","));
+  history.replaceState(null, "", p.toString() ? `#${p}` : location.pathname);
+}
+
+function more() {
+  const s = state();
+  $("list").insertAdjacentHTML("beforeend", rows.slice(shown, shown + PAGE).map(([n, f]) => render(n, f, s)).join(""));
+  shown += PAGE;
+  $("more").hidden = shown >= rows.length;
+}
+
+function check() {
+  const s = state();
+  const out = [];
+  for (const tok of $("paste").value.split(/\s+/).filter(t => t.startsWith("--"))) {
+    const [flag, value = ""] = tok.slice(2).split(/=(.*)/s);
+    const names = /^(enable|disable)-(blink-)?features$/.test(flag) ? value.split(",").filter(Boolean) : [flag];
+    for (const n of names) {
+      const f = data.flags[n];
+      const label = esc(names.length > 1 || names[0] !== flag ? `--${flag}=${n}` : tok);
+      const oses = f ? s.os.filter(o => f.os[o] && (!s.v || inRange(f.os[o], s.v))) : [];
+      if (!oses.length) { out.push(`<div class="bad">${label}: unknown${s.v ? ` in M${s.v}` : ""} for ${s.os.map(o => OS[o]).join(", ")}</div>`); continue; }
+      const bad = oses.filter(o => f.infobar && (s.v ? inRange(f.infobar[o], s.v) : f.infobar[o]));
+      out.push(`<div class="${bad.length ? "bad" : "good"}">${label}: ${oses.map(o => OS[o]).join(", ")}${bad.length ? ` &middot; infobar on ${bad.map(o => OS[o]).join(", ")}` : ""}</div>`);
+    }
+  }
+  $("result").innerHTML = out.join("");
+}
+
+fetch("flags.json").then(r => r.json()).then(d => {
+  data = d;
+  const ms = milestones = Object.keys(d.versions).map(Number).sort((a, b) => b - a);
+  $("v").insertAdjacentHTML("beforeend", ms.map(m => `<option value="${m}">M${m} (${d.versions[m]})</option>`).join(""));
+  $("range").innerHTML = `${Object.keys(d.flags).length} flags, M${ms[ms.length - 1]}&ndash;M${ms[0]}.`;
+  const p = new URLSearchParams(location.hash.slice(1));
+  $("q").value = p.get("q") || ""; $("v").value = p.get("v") || ""; $("kind").value = p.get("kind") || ""; $("warn").value = p.get("warn") || ""; $("about").value = p.get("about") || "";
+  if (p.get("os")) document.querySelectorAll(".os").forEach(e => e.checked = p.get("os").split(",").includes(e.value));
+  for (const id of ["q", "v", "kind", "warn", "about"]) $(id).addEventListener("input", update);
+  document.querySelectorAll(".os").forEach(e => e.addEventListener("change", update));
+  $("paste").addEventListener("input", check);
+  $("more").addEventListener("click", more);
+  $("tab-list").addEventListener("click", e => { e.preventDefault(); setView("list"); });
+  $("tab-timeline").addEventListener("click", e => { e.preventDefault(); setView("timeline"); });
+  $("timeline").addEventListener("click", e => {
+    const a = e.target.closest("a[data-q]");
+    if (!a) return;
+    e.preventDefault(); $("q").value = a.dataset.q; setView("list");
+  });
+  setView(p.get("view") === "timeline" ? "timeline" : "list");
+});
+</script>
+</body>
+</html>
