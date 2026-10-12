@@ -1,6 +1,7 @@
 # Daily: process new or changed Chrome milestones from Chrome for Testing, commit data/,
 # rebuild site/flags.json and deploy site/ to GitHub Pages.
-# Backfill: run manually with limit 0 (all missing milestones, ~2.5 min each).
+# Backfill: run manually with limit 0 (all missing milestones, ~1 min each);
+# rebuild reprocesses milestones already in data/ (after a parser change).
 name: update
 on:
   schedule:
@@ -26,8 +27,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/cache@v4
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v6
         with:
           path: ~/.cache/chrome-flags-site/src
           key: chromium-src-${{ github.run_id }}
@@ -42,8 +43,8 @@ jobs:
             git push -q
           fi
       - run: python3 build.py site
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v4
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: site
   deploy:
@@ -54,4 +55,4 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - id: deploy
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
-"""Every Chromium command-line flag across versions and desktop OSes.
+"""Every Chromium command-line flag and chrome://flags entry across versions and desktop OSes.
 
 For each Chrome milestone that Chrome for Testing (CfT) publishes, this reads
-  - the Chromium source at that tag (sparse clone of the GitHub mirror):
+  - the Chromium source at that tag (sparse, blobless clone of the GitHub mirror):
       switches        const char kX[] = "x" in *switch*.{cc,h}        --x
-      features        BASE_FEATURE(kX, ...) in *feature*.{cc,h}       --enable-features=X
+      features        BASE_FEATURE(kX, ...) in all checked-out files   --enable-features=X
       blink features  runtime_enabled_features.json5                  --enable-blink-features=X
+      chrome://flags  about_flags.cc + flag_descriptions.{cc,h}
     with the // comment above each definition, the default state of each
     feature per OS and the "unsupported command-line flag" list
     (chrome/browser/ui/startup/bad_flags_prompt.cc) per OS;
   - the official binary per OS (linux64, mac-arm64, win64): a flag counts as
     available on an OS if its name occurs as a string in that binary.
+See docs/how-it-works.md.
 
   ./build.py update [--only 113,155] [--limit N] [--force]   process new or changed milestones -> data/<m>.json.gz
-  ./build.py resource [--only 141]                 recompute source metadata of data/, no downloads
-  ./build.py site                                  merge data/ -> site/flags.json
+  ./build.py resource [--only 141]                            re-parse the source for data/, no downloads
+  ./build.py site                                             merge data/ -> site/flags.json
 """
 import argparse
 import bisect
@@ -54,8 +56,8 @@ ABOUT_OS = {"kOsAll": PLATFORMS, "kOsDesktop": PLATFORMS, "kOsLinux": ["linux"],
 COMMENT = r"((?:^[ \t]*//[^\n]*\n)*)"  # [^\n], not ".": FEATURE runs with re.S
 SWITCH = re.compile(COMMENT + r'^[^\n/]*?(?<![\w:])(k\w+)\[\]\s*=\s*"([^"]+)"', re.M)
 SWITCH_MACRO = re.compile(COMMENT + r'^[ \t]*(?!BASE_FEATURE)\w+\(\s*(k\w+)\s*,\s*"([^"]+)"\s*\)', re.M)
-FEATURE = re.compile(COMMENT + r'^[ \t]*BASE_FEATURE\(\s*(?:\w+::)*(\w+)\s*,', re.M)  # M141: BASE_FEATURE(Name, ...) without k;
-# omnibox: BASE_FEATURE(Class::kX, ...)
+# BASE_FEATURE(kX, ...), M141 BASE_FEATURE(Name, ...) without k, omnibox BASE_FEATURE(Class::kX, ...)
+FEATURE = re.compile(COMMENT + r'^[ \t]*BASE_FEATURE\(\s*(?:\w+::)*(\w+)\s*,', re.M)
 LITERALS = r'(?:"(?:[^"\\]|\\.)*"\s*)+'
 BLINK_ENTRY = re.compile(r'\{\s*((?:[ \t]*//[^\n]*\n)*)\s*name:\s*"(\w+)"(.*?)\n\s*\},?\n', re.S)
 SWITCH_FILE = re.compile(r"(^|_)switch(es|_list)?\.(cc|h)$")  # not *switcher*
